@@ -1,0 +1,182 @@
+# Based on
+# <https://docs.github.com/en/actions/publishing-packages/publishing-docker-images>
+# <https://docs.docker.com/build/ci/github-actions/multi-platform/#distribute-build-across-multiple-runners>.
+
+name: Publish Docker image
+
+on:
+    schedule:
+        - cron: "30 19 * * 1,4"
+    workflow_dispatch:
+    push:
+        branches: ["main"]
+        # Publish semver tags as releases.
+        tags: ["v*.*.*"]
+        paths: &paths
+            - ".github/workflows/DockerPublish.yml"
+            - "Dockerfile"
+            - "julia_cpu_target.sh"
+            - "**/*.jl"
+    pull_request:
+        branches: ["main"]
+        paths: *paths
+
+env:
+    REGISTRY: ghcr.io
+    IMAGE_NAME: ${{ github.repository }}
+
+concurrency:
+    # Skip intermediate builds: always.
+    # Cancel intermediate builds: only if it is a pull request build.
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+    build:
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - platform: linux/amd64
+                      os: ubuntu-latest
+                      tag_prefix: test
+                      check-bounds: "yes"
+                      julia_version: "1.12.5"
+                    - platform: linux/amd64
+                      os: ubuntu-latest
+                      tag_prefix: docs
+                      check-bounds: "auto"
+                      julia_version: "1.12.5"
+
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 120
+        permissions:
+            contents: read
+            packages: write
+            attestations: write
+            # This is used to complete the identity challenge
+            # with sigstore/fulcio when running outside of PRs.
+            id-token: write
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v6
+
+            # Docker is terrible and doesn't like uppercase image names.
+            - name: Lowercase image name
+              run: |
+                  IMAGE_NAME=$(echo ${IMAGE_NAME} | tr A-Z a-z)
+                  echo "IMAGE_NAME=${IMAGE_NAME}" | tee -a "${GITHUB_ENV}"
+
+            # Needed to make caching on GHA work: https://stackoverflow.com/a/73884678.
+            # https://github.com/docker/setup-buildx-action
+            - name: Setup Docker buildx
+              uses: docker/setup-buildx-action@v3
+
+            # Log into the registry except on PRs.
+            # https://github.com/docker/login-action
+            - name: Log into registry ${{ env.REGISTRY }}
+              if: github.event_name != 'pull_request'
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            # Build and push Docker image with Buildx (don't push on PR)
+            # https://github.com/docker/build-push-action
+            - name: Build and push
+              timeout-minutes: 90
+              id: build
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  push: ${{ github.event_name != 'pull_request' }}
+                  platforms: ${{ matrix.platform }}
+                  build-args: |
+                      JULIA_VERSION=${{ matrix.julia_version }}
+                      CHECK_BOUNDS=${{ matrix.check-bounds }}
+                      ENV_NAME=${{ matrix.tag_prefix }}
+                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag_prefix }}-julia_${{ matrix.julia_version }}
+                  # # See: https://docs.docker.com/build/ci/github-actions/cache/#github-cache
+                  # cache-from: type=gha
+                  # cache-to: type=gha,mode=max
+
+            - name: Export digest
+              run: |
+                  mkdir -p /tmp/digests
+                  echo "${{ steps.build.outputs.digest }}" > /tmp/digests/${{ matrix.tag_prefix }}-julia_${{ matrix.julia_version }}-$(echo ${{ matrix.platform }} | tr / -)
+
+            - name: Upload digest
+              uses: actions/upload-artifact@v7
+              with:
+                  name: digests-${{ matrix.tag_prefix }}-julia_${{ matrix.julia_version }}
+                  path: /tmp/digests/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    merge:
+        needs: build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            attestations: write
+            # This is used to complete the identity challenge
+            # with sigstore/fulcio when running outside of PRs.
+            id-token: write
+        if: github.event_name != 'pull_request'
+
+        steps:
+            # Docker is terrible and doesn't like uppercase image names.
+            - name: Lowercase image name
+              run: |
+                  IMAGE_NAME=$(echo ${IMAGE_NAME} | tr A-Z a-z)
+                  echo "IMAGE_NAME=${IMAGE_NAME}" | tee -a "${GITHUB_ENV}"
+
+            - name: Download digests
+              uses: actions/download-artifact@v8
+              with:
+                  path: /tmp/digests
+                  pattern: digests-*
+                  merge-multiple: true
+
+            # https://github.com/docker/setup-buildx-action
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            # Log into the registry.
+            # https://github.com/docker/login-action
+            - name: Log into registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Create manifest lists for each tag
+              run: |
+                  for file in /tmp/digests/*; do
+                    TAG=${file##*/}                        # e.g. "docs-julia_1.12.4-linux-amd64"
+                    VARIANT=$(echo ${TAG} | cut -d- -f1-2) # e.g. "docs-julia_1.12.4"
+                    # buildx imagetools needs: -t registry/image:tag and sources
+                    SOURCES=""
+                    for f in /tmp/digests/${VARIANT}-*; do
+                      # each f contains a digest per arch
+                      DIG=$(cat "${f}")
+                      SOURCES="${SOURCES} ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIG}"
+                    done
+                    docker buildx imagetools create \
+                      --tag ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${VARIANT} \
+                      ${SOURCES}
+                  done
+
+            - name: Get package name
+              run: |
+                  PACKAGE_NAME=$(echo ${{ env.IMAGE_NAME }} | cut -d/ -f2)
+                  echo "PACKAGE_NAME=${PACKAGE_NAME}" | tee -a "${GITHUB_ENV}"
+            - uses: actions/delete-package-versions@v5
+              with:
+                  package-name: ${{ env.PACKAGE_NAME }}
+                  package-type: "container"
+                  min-versions-to-keep: 30

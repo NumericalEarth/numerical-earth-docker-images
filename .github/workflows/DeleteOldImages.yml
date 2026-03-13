@@ -1,0 +1,30 @@
+name: Delete Old Images
+
+on:
+    schedule:
+        - cron: "41 9 * * 2"
+    workflow_dispatch:
+
+concurrency:
+    # Skip intermediate builds: always.
+    # Cancel intermediate builds: only if it is a pull request build.
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+    cleanup:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+
+        steps:
+            # Docker is terrible and doesn't like uppercase image names.
+            - name: Lowercase package name
+              run: |
+                  PACKAGE_NAME=$(echo ${{ github.repository }} | cut -d/ -f2 | tr A-Z a-z)
+                  echo "PACKAGE_NAME=${PACKAGE_NAME}" | tee "${GITHUB_ENV}"
+
+            - uses: actions/delete-package-versions@v5
+              with:
+                  package-name: ${{ env.PACKAGE_NAME }}
+                  package-type: "container"
+                  min-versions-to-keep: 30
