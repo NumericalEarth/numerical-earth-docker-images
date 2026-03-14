@@ -67,11 +67,8 @@ RUN . /julia_cpu_target.sh && julia --color=yes --check-bounds=${CHECK_BOUNDS} -
 RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl
 
 # Instantiate environment
-# NumericalEarth.jl has no test/Project.toml — test deps are in main [extras].
-# For ENV_NAME=test: use --project=/tmp/NumericalEarth.jl (main project)
-# For ENV_NAME=docs: use --project=/tmp/NumericalEarth.jl/docs (has its own Project.toml)
 RUN . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' julia --color=yes \
-    --project=/tmp/NumericalEarth.jl/$([ "${ENV_NAME}" = "test" ] && echo "" || echo "${ENV_NAME}") \
+    --project=/tmp/NumericalEarth.jl/${ENV_NAME} \
     --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.instantiate()'
 
 # Clean up NumericalEarth clone
