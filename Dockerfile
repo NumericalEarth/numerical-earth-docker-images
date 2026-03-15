@@ -29,7 +29,7 @@ ENV JULIA_LOAD_PATH=:${JULIA_PROJECT}
 # Follow https://github.com/JuliaGPU/CUDA.jl/blob/5d9474ae73fab66989235f7ff4fd447d5ee06f8e/Dockerfile
 
 ARG CUDA_VERSION=13.0
-ARG REACTANT_CUDA_VERSION=13.0
+ARG REACTANT_CUDA_VERSION=13.1
 
 # We need a stub `libcuda.so.1` in order to load a CUDA-enabled build of Reactant_jll, but
 # an empty shared library with that soname is sufficient.  Yes, I'm evil.
