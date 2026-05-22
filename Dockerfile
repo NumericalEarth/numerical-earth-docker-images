@@ -66,13 +66,13 @@ RUN . /julia_cpu_target.sh && julia --color=yes --check-bounds=${CHECK_BOUNDS} -
 # Clone NumericalEarth
 RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl
 
-# Instantiate environment
+# Instantiate environment and clean up NumericalEarth clone within the same step so that we
+# don't cache everything was written in this directory.  In particular, the CondaPkg
+# environment would occupy lots of space in this layer, needlessly.
 RUN . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' julia --color=yes \
     --project=/tmp/NumericalEarth.jl/${ENV_NAME} \
-    --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.instantiate()'
-
-# Clean up NumericalEarth clone
-RUN rm -rf /tmp/NumericalEarth.jl
+    --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.instantiate()' && \
+    rm -rf /tmp/NumericalEarth.jl
 
 # Remove fake libcuda.so.1
 RUN rm -fv libcuda.so.1
