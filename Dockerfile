@@ -5,7 +5,7 @@ FROM julia:${JULIA_VERSION}
 # Install some dependencies
 RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && apt-get install -y ca-certificates earlyoom gcc git gpg jq \
+    && apt-get install -y --no-install-recommends ca-certificates earlyoom git gpg jq \
     && apt-get --purge autoremove -y \
     && apt-get autoclean \
     && rm -rf /var/lib/apt/lists/*'
@@ -32,8 +32,15 @@ ARG CUDA_VERSION=13.0
 ARG REACTANT_CUDA_VERSION=13.1
 
 # We need a stub `libcuda.so.1` in order to load a CUDA-enabled build of Reactant_jll, but
-# an empty shared library with that soname is sufficient.  Yes, I'm evil.
-RUN gcc -shared -Wl,-soname=libcuda.so.1 -o libcuda.so.1 /dev/null
+# an empty shared library with that soname is sufficient.  Install and remove GCC in the
+# same step, to avoid caching its entire installation outside of this step.
+RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gcc \
+    && gcc -shared -Wl,-soname=libcuda.so.1 -o libcuda.so.1 /dev/null \
+    && apt-get --purge autoremove -y \
+    && apt-get autoclean \
+    && rm -rf /var/lib/apt/lists/*'
 
 # pre-install the CUDA toolkit from an artifact. we do this separately from CUDA.jl so that
 # this layer can be cached independently. it also avoids double precompilation of CUDA.jl in
@@ -63,23 +70,14 @@ RUN . /julia_cpu_target.sh && JULIA_PKG_PRECOMPILE_AUTO="false" julia --color=ye
 RUN . /julia_cpu_target.sh && julia --color=yes --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.add("CUDA"); \
     using CUDA; CUDA.precompile_runtime()'
 
-# Clone NumericalEarth
-RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl
-
-# Instantiate environment and clean up NumericalEarth clone within the same step so that we
-# don't cache everything was written in this directory.  In particular, the CondaPkg
-# environment would occupy lots of space in this layer, needlessly.
-RUN . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' julia --color=yes \
+# Clone NumericalEarth and instantiate environment and clean up NumericalEarth clone within
+# the same step so that we don't cache everything was written in this directory.  In
+# particular, the CondaPkg environment would occupy lots of space in this layer, needlessly.
+RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl && \
+    . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' julia --color=yes \
     --project=/tmp/NumericalEarth.jl/${ENV_NAME} \
     --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.instantiate()' && \
     rm -rf /tmp/NumericalEarth.jl
 
 # Remove fake libcuda.so.1
 RUN rm -fv libcuda.so.1
-
-# Uninstall packages not needed at runtime, to reduce size of image
-RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
-    && apt-get remove --autoremove -y gcc \
-    && apt-get --purge autoremove -y \
-    && apt-get autoclean \
-    && rm -rf /var/lib/apt/lists/*'
