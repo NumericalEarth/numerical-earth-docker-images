@@ -38,6 +38,7 @@ RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
     && apt-get install -y --no-install-recommends gcc libc-dev \
     && gcc -shared -Wl,-soname=libcuda.so.1 -o libcuda.so.1 /dev/null \
+    && apt-get remove -y gcc libc-dev \
     && apt-get --purge autoremove -y \
     && apt-get autoclean \
     && rm -rf /var/lib/apt/lists/*'
