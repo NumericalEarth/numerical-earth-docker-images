@@ -36,7 +36,7 @@ ARG REACTANT_CUDA_VERSION=13.1
 # same step, to avoid caching its entire installation outside of this step.
 RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
-    && apt-get install -y --no-install-recommends gcc \
+    && apt-get install -y --no-install-recommends gcc libc-dev \
     && gcc -shared -Wl,-soname=libcuda.so.1 -o libcuda.so.1 /dev/null \
     && apt-get --purge autoremove -y \
     && apt-get autoclean \
