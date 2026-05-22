@@ -59,6 +59,26 @@ jobs:
             id-token: write
 
         steps:
+            - name: Show available storage before cleanup
+              run: |
+                echo " --> df -h /"
+                df -h /
+                echo " --> df -a /"
+                df -a /
+            - name: Free Disk Space
+              uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+              with:
+                tool-cache: true
+                large-packages: false
+            - name: Cleanup /opt
+              run: |
+                sudo rm -rf /opt/*
+            - name: Show available storage after cleanup
+              run: |
+                echo " --> df -h /"
+                df -h /
+                echo " --> df -a /"
+                df -a /
             - name: Checkout repository
               uses: actions/checkout@v6
 
