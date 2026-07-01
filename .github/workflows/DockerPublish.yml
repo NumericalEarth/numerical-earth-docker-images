@@ -80,7 +80,7 @@ jobs:
                 echo " --> df -a /"
                 df -a /
             - name: Checkout repository
-              uses: actions/checkout@v6
+              uses: actions/checkout@v7
 
             # Docker is terrible and doesn't like uppercase image names.
             - name: Lowercase image name
