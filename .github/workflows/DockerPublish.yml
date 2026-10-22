@@ -199,4 +199,4 @@ jobs:
               with:
                   package-name: ${{ env.PACKAGE_NAME }}
                   package-type: "container"
-                  min-versions-to-keep: 30
+                  min-versions-to-keep: 50
