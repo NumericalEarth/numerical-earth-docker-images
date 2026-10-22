@@ -50,7 +50,7 @@ RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
 # for the preferences to be picked up, but we only put them in `[extras]` for the time
 # being, so that we don't have to resolve the environment now: they will be installed
 # later with the same versions resolved in the target environment, to avoid installing
-# multiple versions of the large `Reactant_jll` and CUDA artifacts.
+# multiple versions or builds of the large `Reactant_jll` and CUDA artifacts.
 RUN numericalearth_env=/usr/local/share/julia/environments/numericalearth && \
     mkdir -p "${numericalearth_env}" && \
     printf '[CUDA_Runtime_jll]\nversion = "%s"\n[Reactant_jll]\ngpu = "cuda"\ngpu_version = "%s"\n' \
@@ -80,11 +80,13 @@ RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp
               \
               #= install the same versions in `@numericalearth`.  Since CUDA is loaded in this =# \
               #= session, `Pkg.add` will also prefer the loaded versions of its dependencies.   =# \
-              #= Skip the packages not in the target environment (e.g. Reactant_jll in `test`). =# \
-              versions = Dict(p.name => p.version for p in values(Pkg.dependencies())); \
-              numericalearth_env = "/usr/local/share/julia/environments/numericalearth"; \
-              rm("$numericalearth_env/Project.toml"); \
-              Pkg.activate(numericalearth_env); \
+              #= Read the versions from the whole manifest, not `Pkg.dependencies()`, which    =# \
+              #= only lists the packages loadable from the target environment: NumericalEarth  =# \
+              #= uses a workspace, so e.g. Reactant_jll is installed also for `test`.          =# \
+              #= Keep the `[extras]` in the project, otherwise the preferences would be        =# \
+              #= ignored when `Pkg.add` selects the artifacts to download.                     =# \
+              versions = Dict(e.name => e.version for e in values(Pkg.Types.EnvCache().manifest)); \
+              Pkg.activate("/usr/local/share/julia/environments/numericalearth"); \
               Pkg.add([PackageSpec(; name, version=versions[name]) for name in ("CUDA", "CUDA_Runtime_jll", "Reactant_jll") if haskey(versions, name)]); \
               Pkg.precompile(); \
               \
