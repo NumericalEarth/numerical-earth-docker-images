@@ -25,6 +25,8 @@ ENV JULIA_DEPOT_PATH=/usr/local/share/julia:
 ENV JULIA_PROJECT='@numericalearth'
 # Add the environment to the load path
 ENV JULIA_LOAD_PATH=:${JULIA_PROJECT}
+# Use eager registry to get latest packages possible from PkgServer
+ENV JULIA_PKG_SERVER_REGISTRY_PREFERENCE=eager
 
 # Follow https://github.com/JuliaGPU/CUDA.jl/blob/5d9474ae73fab66989235f7ff4fd447d5ee06f8e/Dockerfile
 
@@ -43,41 +45,51 @@ RUN /bin/sh -c 'export DEBIAN_FRONTEND=noninteractive \
     && apt-get autoclean \
     && rm -rf /var/lib/apt/lists/*'
 
-# pre-install the CUDA toolkit from an artifact. we do this separately from CUDA.jl so that
-# this layer can be cached independently. it also avoids double precompilation of CUDA.jl in
-# order to call `CUDA.set_runtime_version!`.
-# Note: we first install install `Reactant` & `Reactant_jll` to resolve the environment
-# together, and then remove `Reactant` because we don't need it at this stage, and finally
-# we precompile the environment.  This should hopefully avoid installing two large
-# `Reactant_jll` artifacts when we later instantiate the environment.
-RUN . /julia_cpu_target.sh && JULIA_PKG_PRECOMPILE_AUTO="false" julia --color=yes --check-bounds=${CHECK_BOUNDS} -e '#= make bundled depot non-writable (JuliaLang/Pkg.jl#4120) =# \
+# Configure the preferences for CUDA_Runtime_jll and Reactant_jll in the `@numericalearth`
+# environment, which is in the load path.  The packages need to be listed in the project
+# for the preferences to be picked up, but we only put them in `[extras]` for the time
+# being, so that we don't have to resolve the environment now: they will be installed
+# later with the same versions resolved in the target environment, to avoid installing
+# multiple versions of the large `Reactant_jll` and CUDA artifacts.
+RUN numericalearth_env=/usr/local/share/julia/environments/numericalearth && \
+    mkdir -p "${numericalearth_env}" && \
+    printf '[CUDA_Runtime_jll]\nversion = "%s"\n[Reactant_jll]\ngpu = "cuda"\ngpu_version = "%s"\n' \
+        "${CUDA_VERSION}" "${REACTANT_CUDA_VERSION}" > "${numericalearth_env}/LocalPreferences.toml" && \
+    printf '[extras]\nCUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"\nReactant_jll = "0192cb87-2b54-54ad-80e0-3be72ad8a3c0"\n' \
+        > "${numericalearth_env}/Project.toml"
+
+# Clone NumericalEarth, instantiate the target environment, install in `@numericalearth` the
+# same versions of CUDA and the JLLs resolved in the target environment (they are all
+# already in the depot at that point, so nothing is downloaded or compiled twice), and clean
+# up the NumericalEarth clone, all within the same step so that we don't cache everything
+# that was written in the clone directory.  In particular, the CondaPkg environment would
+# occupy lots of space in this layer, needlessly.
+RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl && \
+    . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' JULIA_PKG_PRECOMPILE_AUTO="false" julia --color=yes \
+    --project=/tmp/NumericalEarth.jl/${ENV_NAME} \
+    --check-bounds=${CHECK_BOUNDS} -e '#= make bundled depot non-writable (JuliaLang/Pkg.jl#4120) =# \
               bundled_depot = last(DEPOT_PATH); \
               run(`find $bundled_depot/compiled -type f -writable -exec chmod -w \{\} \;`); \
-              #= configure the preference =# \
-              env = "/usr/local/share/julia/environments/numericalearth"; \
-              mkpath(env); \
-              write("$env/LocalPreferences.toml", \
-                    "[CUDA_Runtime_jll]\nversion = \"'${CUDA_VERSION}'\"\n[Reactant_jll]\ngpu = \"cuda\"\ngpu_version = \"'${REACTANT_CUDA_VERSION}'\""); \
               \
-              #= install the JLLs =# \
+              #= instantiate the target environment =# \
               using Pkg; \
-              Pkg.add(["CUDA_Runtime_jll", "Reactant_jll", "Reactant"]); \
-              Pkg.rm("Reactant"); \
+              Pkg.instantiate(); \
               Pkg.precompile(); \
+              using CUDA; \
+              CUDA.precompile_runtime(); \
+              \
+              #= install the same versions in `@numericalearth`.  Since CUDA is loaded in this =# \
+              #= session, `Pkg.add` will also prefer the loaded versions of its dependencies.   =# \
+              #= Skip the packages not in the target environment (e.g. Reactant_jll in `test`). =# \
+              versions = Dict(p.name => p.version for p in values(Pkg.dependencies())); \
+              numericalearth_env = "/usr/local/share/julia/environments/numericalearth"; \
+              rm("$numericalearth_env/Project.toml"); \
+              Pkg.activate(numericalearth_env); \
+              Pkg.add([PackageSpec(; name, version=versions[name]) for name in ("CUDA", "CUDA_Runtime_jll", "Reactant_jll") if haskey(versions, name)]); \
+              Pkg.precompile(); \
+              \
               #= revert bundled depot changes =# \
-              run(`find $bundled_depot/compiled -type f -writable -exec chmod +w \{\} \;`)'
-
-# install CUDA.jl itself
-RUN . /julia_cpu_target.sh && julia --color=yes --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.add("CUDA"); \
-    using CUDA; CUDA.precompile_runtime()'
-
-# Clone NumericalEarth and instantiate environment and clean up NumericalEarth clone within
-# the same step so that we don't cache everything was written in this directory.  In
-# particular, the CondaPkg environment would occupy lots of space in this layer, needlessly.
-RUN git clone --depth=1 https://github.com/NumericalEarth/NumericalEarth.jl /tmp/NumericalEarth.jl && \
-    . /julia_cpu_target.sh && LD_LIBRARY_PATH='.' julia --color=yes \
-    --project=/tmp/NumericalEarth.jl/${ENV_NAME} \
-    --check-bounds=${CHECK_BOUNDS} -e 'using Pkg; Pkg.instantiate()' && \
+              run(`find $bundled_depot/compiled -type f -writable -exec chmod +w \{\} \;`)' && \
     rm -rf /tmp/NumericalEarth.jl
 
 # Remove fake libcuda.so.1
